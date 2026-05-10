@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Type, FileText, Plus } from 'lucide-react';
+import { X, Plus } from 'lucide-react';
 import { GRADIENT_PRESETS } from '../data';
 import { generateId } from '../utils';
 
@@ -30,7 +30,7 @@ export default function CreateDrawerForm({ onAdd, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in" onClick={onClose}>
       <div className="absolute inset-0 bg-black/80 backdrop-blur-md" />
-      <div className="relative w-full max-w-md glass-modal p-10 sm:p-12 shadow-2xl animate-zoom-in" onClick={(e) => e.stopPropagation()}>
+      <div className="relative w-full max-w-md glass-modal p-10 sm:p-12 shadow-2xl animate-zoom-in max-h-[90vh] overflow-y-auto custom-scrollbar" onClick={(e) => e.stopPropagation()}>
         <button id="close-create-drawer" onClick={onClose} className="absolute top-6 right-6 p-2 rounded-xl hover:bg-white/5 text-slate-500 hover:text-white transition-colors">
           <X size={20} />
         </button>

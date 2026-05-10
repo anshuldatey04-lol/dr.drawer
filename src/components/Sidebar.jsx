@@ -26,7 +26,7 @@ export default function Sidebar({
             <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 shrink-0">
               <Sparkles size={20} className="text-indigo-400" />
             </div>
-            <span className="font-black text-white text-lg tracking-tighter uppercase">Drawer</span>
+            <span className="font-black text-white text-lg tracking-tighter uppercase">Dr. Drawer</span>
           </div>
         )}
         <button

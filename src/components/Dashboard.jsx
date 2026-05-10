@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Search, Plus, Menu, Inbox, Sparkles } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Search, Plus, Menu, Inbox, Sparkles, LogOut, Trash2 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import LinkCard from './LinkCard';
 import AddLinkForm from './AddLinkForm';
@@ -14,21 +14,16 @@ export default function Dashboard({
   onDeleteLink, 
   onLogout 
 }) {
-  const [activeDrawerId, setActiveDrawerId] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [search, setSearch] = useState('');
   const [showAddLink, setShowAddLink] = useState(false);
   const [showCreateDrawer, setShowCreateDrawer] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Set initial active drawer if none is set
-  useEffect(() => {
-    if (!activeDrawerId && drawers.length > 0) {
-      setActiveDrawerId(drawers[0].id);
-    }
-  }, [drawers, activeDrawerId]);
-
-  const activeDrawer = drawers.find((d) => d.id === activeDrawerId) || drawers[0];
+  // Derive active drawer ID: use selected, fallback to first drawer
+  const activeDrawerId = selectedId || (drawers.length > 0 ? drawers[0].id : null);
+  const activeDrawer = drawers.find((d) => d.id === activeDrawerId);
 
   const filteredLinks = useMemo(() => {
     if (!activeDrawer) return [];
@@ -41,8 +36,16 @@ export default function Dashboard({
 
   const handleCreateDrawer = (newDrawer) => {
     onAddDrawer(newDrawer);
-    setActiveDrawerId(newDrawer.id);
+    setSelectedId(newDrawer.id);
     setShowCreateDrawer(false);
+  };
+
+  const handleDeleteDrawer = () => {
+    if (!activeDrawerId) return;
+    if (window.confirm('Are you sure you want to delete this drawer and all its links?')) {
+      onDeleteDrawer(activeDrawerId);
+      if (selectedId === activeDrawerId) setSelectedId(null);
+    }
   };
 
   const handleAddLink = (newLink) => {
@@ -57,7 +60,7 @@ export default function Dashboard({
   };
 
   const handleSelectDrawer = (id) => {
-    setActiveDrawerId(id);
+    setSelectedId(id);
     setSearch('');
     setMobileMenuOpen(false);
   };
@@ -98,17 +101,12 @@ export default function Dashboard({
           <div className="flex-1" />
 
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/[0.03] border border-white/[0.05]">
-              <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Live Workspace</span>
-            </div>
-            
             <button
               onClick={onLogout}
               className="p-2 rounded-xl hover:bg-red-500/10 text-slate-500 hover:text-red-400 transition-colors"
               title="Logout"
             >
-              <Users size={18} />
+              <LogOut size={18} />
             </button>
           </div>
         </header>
@@ -138,6 +136,13 @@ export default function Dashboard({
                          <div className="px-3 py-1 rounded-full bg-white/20 backdrop-blur-md border border-white/20 text-[10px] font-black uppercase tracking-tighter text-white">
                            {activeDrawer.links.length} Links
                          </div>
+                         <button
+                           onClick={handleDeleteDrawer}
+                           className="p-2 rounded-xl bg-white/10 hover:bg-red-500/20 text-white/50 hover:text-white transition-all border border-white/10"
+                           title="Delete Drawer"
+                         >
+                           <Trash2 size={16} />
+                         </button>
                       </div>
                       <h1 className="text-5xl sm:text-7xl font-black text-white tracking-tighter leading-none mb-2">
                         {activeDrawer.name}
@@ -194,7 +199,6 @@ export default function Dashboard({
                       <LinkCard
                         key={link.id}
                         link={link}
-                        gradientColors={activeDrawer?.gradientColors}
                         onDelete={handleDeleteLink}
                         index={i}
                       />
@@ -234,7 +238,7 @@ export default function Dashboard({
         <footer className="flex items-center justify-between h-12 px-8 border-t border-white/[0.03] bg-[#050508] text-[10px] font-bold uppercase tracking-widest text-slate-600 shrink-0">
           <span className="flex items-center gap-2">
             <Sparkles size={14} className="text-indigo-500/50" />
-            TaskDrawer Cloud
+            Dr. Drawer Cloud
           </span>
           <span className="text-slate-700">Encrypted Workspace</span>
         </footer>
@@ -245,7 +249,6 @@ export default function Dashboard({
         <AddLinkForm
           onAdd={handleAddLink}
           onClose={() => setShowAddLink(false)}
-          gradientColors={activeDrawer?.gradientColors}
         />
       )}
       {showCreateDrawer && (

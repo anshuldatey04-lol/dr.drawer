@@ -2,7 +2,7 @@ import { ExternalLink, Trash2 } from 'lucide-react';
 import { normalizeUrl, truncateUrl, extractDomain, getYouTubeVideoId } from '../utils';
 import FaviconImage from './FaviconImage';
 
-export default function LinkCard({ link, gradientColors, onDelete, index }) {
+export default function LinkCard({ link, onDelete, index }) {
   const handleClick = () => {
     window.open(normalizeUrl(link.url), '_blank', 'noopener,noreferrer');
   };
@@ -11,10 +11,10 @@ export default function LinkCard({ link, gradientColors, onDelete, index }) {
   const domain = extractDomain(link.url);
 
   return (
-    <button
+    <div
       id={`link-card-${link.id}`}
       onClick={handleClick}
-      className="group relative w-full text-left bg-white/[0.02] border border-white/[0.05] rounded-[2rem] overflow-hidden transition-all duration-500 hover:bg-white/[0.05] hover:border-white/[0.1] hover:-translate-y-2 hover:shadow-2xl hover:shadow-black/40 animate-slide-up"
+      className="group relative w-full text-left bg-white/[0.02] border border-white/[0.05] rounded-[2rem] overflow-hidden transition-all duration-500 hover:bg-white/[0.05] hover:border-white/[0.1] hover:-translate-y-2 hover:shadow-2xl hover:shadow-black/40 animate-slide-up cursor-pointer"
       style={{ animationDelay: `${index * 0.05}s` }}
     >
       {/* Thumbnail Area */}
@@ -69,6 +69,6 @@ export default function LinkCard({ link, gradientColors, onDelete, index }) {
       <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-700">
          <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 via-transparent to-purple-500/5" />
       </div>
-    </button>
+    </div>
   );
 }

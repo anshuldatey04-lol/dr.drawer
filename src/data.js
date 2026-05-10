@@ -1,4 +1,4 @@
-// Default drawer data for TaskDrawerApp
+// Default drawer data for Dr. Drawer
 export const DEFAULT_DRAWERS = [
   {
     id: 'work',

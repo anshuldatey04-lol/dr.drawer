@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import express from 'express';
 import session from 'express-session';
 import sqlite3 from 'sqlite3';
@@ -8,12 +10,52 @@ import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import passport from 'passport';
+import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
 const port = 3001;
+
+// --- GOOGLE OAUTH CONFIGURATION ---
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+passport.use(new GoogleStrategy({
+    clientID: GOOGLE_CLIENT_ID,
+    clientSecret: GOOGLE_CLIENT_SECRET,
+    callbackURL: "http://localhost:3001/api/auth/google/callback"
+  },
+  function(accessToken, refreshToken, profile, done) {
+    const email = profile.emails[0].value;
+    const name = profile.displayName;
+    const googleId = profile.id;
+
+    db.get('SELECT * FROM users WHERE googleId = ? OR email = ?', [googleId, email], (err, user) => {
+      if (err) return done(err);
+      if (user) {
+        if (!user.googleId) {
+          db.run('UPDATE users SET googleId = ? WHERE id = ?', [googleId, user.id]);
+        }
+        return done(null, user);
+      } else {
+        db.run('INSERT INTO users (email, name, googleId) VALUES (?, ?, ?)', [email, name, googleId], function(err) {
+          if (err) return done(err);
+          db.get('SELECT * FROM users WHERE id = ?', [this.lastID], (err, newUser) => {
+            done(err, newUser);
+          });
+        });
+      }
+    });
+  }
+));
+
+passport.serializeUser((user, done) => done(null, user.id));
+passport.deserializeUser((id, done) => {
+  db.get('SELECT id, email, name FROM users WHERE id = ?', [id], (err, user) => done(err, user));
+});
 
 // 7. Security Headers (Helmet)
 app.use(helmet({
@@ -44,7 +86,7 @@ app.use(express.json());
 
 // 1. Session Management
 app.use(session({
-  secret: 'taskdrawer_super_secret_key_777', // In production, use env variable
+  secret: process.env.SESSION_SECRET, // In production, use env variable
   resave: false,
   saveUninitialized: false,
   rolling: true, // Reset cookie expiration on every response
@@ -55,6 +97,9 @@ app.use(session({
     maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
   }
 }));
+
+app.use(passport.initialize());
+app.use(passport.session());
 
 // 10. Rate Limiting
 const generalLimiter = rateLimit({
@@ -82,7 +127,8 @@ db.serialize(() => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       email TEXT UNIQUE,
       name TEXT,
-      password TEXT
+      password TEXT,
+      googleId TEXT
     )
   `);
 
@@ -177,7 +223,7 @@ app.post('/api/signup', async (req, res) => {
           logEvent(this.lastID, 'SIGNUP_SUCCESS', { email });
           res.json({ message: 'User created', user: { id: this.lastID, email, name } });
         });
-      } catch (error) {
+      } catch {
         res.status(500).json({ error: 'Server error' });
       }
     });
@@ -212,7 +258,7 @@ app.post('/api/login', loginLimiter, (req, res) => {
       logEvent(user.id, 'LOGIN_SUCCESS', { email });
       res.json({ message: 'Logged in', user: { id: user.id, email: user.email, name: user.name } });
     });
-  } catch (err) {
+  } catch {
     res.status(400).json({ error: 'Invalid email or password' });
   }
 });
@@ -232,33 +278,44 @@ app.get('/api/me', requireAuth, (req, res) => {
   });
 });
 
+// --- GOOGLE OAUTH ROUTES ---
+
+app.get('/api/auth/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] }));
+
+app.get('/api/auth/google/callback', 
+  passport.authenticate('google', { failureRedirect: 'http://localhost:5173/?error=auth_failed' }),
+  function(req, res) {
+    req.session.userId = req.user.id;
+    res.redirect('http://localhost:5173/');
+  });
+
 // --- DATA ENDPOINTS (with User Scoping & Authorization) ---
 
 // 2. Get Drawers (User Scoped)
 app.get('/api/drawers', requireAuth, (req, res) => {
-  db.all('SELECT * FROM drawers WHERE userId = ?', [req.session.userId], (err, drawers) => {
+  db.all('SELECT * FROM drawers WHERE userId = ?', [req.session.userId], async (err, drawers) => {
     if (err) return res.status(500).json({ error: 'Database error' });
     
-    // For each drawer, fetch its links
-    const drawersWithLinks = [];
-    if (drawers.length === 0) return res.json({ drawers: [] });
-
-    let completed = 0;
-    drawers.forEach((drawer) => {
-      db.all('SELECT * FROM links WHERE drawerId = ? AND userId = ?', [drawer.id, req.session.userId], (err, links) => {
-        if (!err) {
-          drawersWithLinks.push({
-            ...drawer,
-            gradientColors: JSON.parse(drawer.gradientColors),
-            links: links.map(l => ({ ...l }))
+    try {
+      const drawersWithLinks = await Promise.all(drawers.map(drawer => {
+        return new Promise((resolve, reject) => {
+          db.all('SELECT * FROM links WHERE drawerId = ? AND userId = ?', [drawer.id, req.session.userId], (err, links) => {
+            if (err) reject(err);
+            else {
+              resolve({
+                ...drawer,
+                gradientColors: JSON.parse(drawer.gradientColors),
+                links: links || []
+              });
+            }
           });
-        }
-        completed++;
-        if (completed === drawers.length) {
-          res.json({ drawers: drawersWithLinks });
-        }
-      });
-    });
+        });
+      }));
+      res.json({ drawers: drawersWithLinks });
+    } catch {
+      res.status(500).json({ error: 'Database error' });
+    }
   });
 });
 
@@ -286,7 +343,7 @@ app.delete('/api/drawers/:id', requireAuth, (req, res) => {
 
     db.run('DELETE FROM drawers WHERE id = ?', [drawerId], (err) => {
       if (err) return res.status(500).json({ error: 'Database error' });
-      db.run('DELETE FROM links WHERE drawerId = ?', [drawerId]);
+      db.run('DELETE FROM links WHERE drawerId = ? AND userId = ?', [drawerId, req.session.userId]);
       logEvent(req.session.userId, 'DRAWER_DELETED', { id: drawerId });
       res.json({ message: 'Drawer deleted' });
     });

@@ -1,10 +1,10 @@
 import { useState, useMemo } from 'react';
-import { X, Link as LinkIcon, Type, Plus, Globe, Sparkles } from 'lucide-react';
+import { X, Globe } from 'lucide-react';
 import { EMOJI_OPTIONS } from '../data';
-import { generateId, extractDomain, getFaviconUrl, getYouTubeVideoId } from '../utils';
+import { generateId, extractDomain, getYouTubeVideoId } from '../utils';
 import FaviconImage from './FaviconImage';
 
-export default function AddLinkForm({ onAdd, onClose, gradientColors }) {
+export default function AddLinkForm({ onAdd, onClose }) {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [emoji, setEmoji] = useState('');
@@ -12,7 +12,6 @@ export default function AddLinkForm({ onAdd, onClose, gradientColors }) {
 
   // Live domain extraction for favicon preview
   const detectedDomain = useMemo(() => extractDomain(url), [url]);
-  const faviconData = useMemo(() => getFaviconUrl(url), [url]);
 
   const handleSubmit = (e) => {
     e.preventDefault();
