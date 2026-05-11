@@ -365,7 +365,7 @@ app.delete('/api/links/:id', requireAuth, (req, res) => {
 
 // --- SERVE FRONTEND IN PRODUCTION ---
 app.use(express.static(join(__dirname, 'dist')));
-app.get('*', (req, res) => {
+app.get('/{*path}', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'));
 });
 
