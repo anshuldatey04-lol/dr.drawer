@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
 import session from 'express-session';
-import sqlite3 from 'sqlite3';
+import Database from 'better-sqlite3';
 import bcrypt from 'bcrypt';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -17,47 +17,101 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-const port = 3001;
+const port = process.env.PORT || 3001;
 
-// --- GOOGLE OAUTH CONFIGURATION ---
+// --- DATABASE SETUP ---
+const db = new Database(join(__dirname, 'database.sqlite'));
+
+// Enable WAL mode for better performance
+db.pragma('journal_mode = WAL');
+
+// Create tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    name TEXT,
+    password TEXT,
+    googleId TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS drawers (
+    id TEXT PRIMARY KEY,
+    userId INTEGER,
+    name TEXT,
+    emoji TEXT,
+    gradientColors TEXT,
+    FOREIGN KEY(userId) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS links (
+    id TEXT PRIMARY KEY,
+    drawerId TEXT,
+    userId INTEGER,
+    name TEXT,
+    url TEXT,
+    emoji TEXT,
+    category TEXT,
+    FOREIGN KEY(drawerId) REFERENCES drawers(id),
+    FOREIGN KEY(userId) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    userId INTEGER,
+    action TEXT,
+    details TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
+// --- ENVIRONMENT ---
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const FRONTEND_URL = IS_PRODUCTION ? 'https://dr-drawer.onrender.com' : 'http://localhost:5173';
+const BACKEND_URL = IS_PRODUCTION ? 'https://dr-drawer.onrender.com' : 'http://localhost:3001';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
+// --- GOOGLE OAUTH ---
 passport.use(new GoogleStrategy({
     clientID: GOOGLE_CLIENT_ID,
     clientSecret: GOOGLE_CLIENT_SECRET,
-    callbackURL: "http://localhost:3001/api/auth/google/callback"
+    callbackURL: `${BACKEND_URL}/api/auth/google/callback`
   },
   function(accessToken, refreshToken, profile, done) {
     const email = profile.emails[0].value;
     const name = profile.displayName;
     const googleId = profile.id;
 
-    db.get('SELECT * FROM users WHERE googleId = ? OR email = ?', [googleId, email], (err, user) => {
-      if (err) return done(err);
+    try {
+      let user = db.prepare('SELECT * FROM users WHERE googleId = ? OR email = ?').get(googleId, email);
       if (user) {
         if (!user.googleId) {
-          db.run('UPDATE users SET googleId = ? WHERE id = ?', [googleId, user.id]);
+          db.prepare('UPDATE users SET googleId = ? WHERE id = ?').run(googleId, user.id);
         }
         return done(null, user);
       } else {
-        db.run('INSERT INTO users (email, name, googleId) VALUES (?, ?, ?)', [email, name, googleId], function(err) {
-          if (err) return done(err);
-          db.get('SELECT * FROM users WHERE id = ?', [this.lastID], (err, newUser) => {
-            done(err, newUser);
-          });
-        });
+        const result = db.prepare('INSERT INTO users (email, name, googleId) VALUES (?, ?, ?)').run(email, name, googleId);
+        const newUser = db.prepare('SELECT * FROM users WHERE id = ?').get(result.lastInsertRowid);
+        return done(null, newUser);
       }
-    });
+    } catch (err) {
+      return done(err);
+    }
   }
 ));
 
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser((id, done) => {
-  db.get('SELECT id, email, name FROM users WHERE id = ?', [id], (err, user) => done(err, user));
+  try {
+    const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(id);
+    done(null, user);
+  } catch (err) {
+    done(err);
+  }
 });
 
-// 7. Security Headers (Helmet)
+// --- SECURITY HEADERS ---
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -76,32 +130,32 @@ app.use(helmet({
   frameguard: { action: 'deny' },
 }));
 
-// CORS configuration
+// --- CORS ---
 app.use(cors({
-  origin: 'http://localhost:5173', // Adjust to your frontend URL
+  origin: FRONTEND_URL,
   credentials: true,
 }));
 
 app.use(express.json());
 
-// 1. Session Management
+// --- SESSION ---
 app.use(session({
-  secret: process.env.SESSION_SECRET, // In production, use env variable
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  rolling: true, // Reset cookie expiration on every response
-  cookie: { 
-    httpOnly: true, 
-    secure: false, // Set to true if using HTTPS
-    sameSite: 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  rolling: true,
+  cookie: {
+    httpOnly: true,
+    secure: IS_PRODUCTION,   // true on Render (HTTPS), false locally
+    sameSite: IS_PRODUCTION ? 'none' : 'lax',  // 'none' required for cross-site on Render
+    maxAge: 7 * 24 * 60 * 60 * 1000
   }
 }));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
-// 10. Rate Limiting
+// --- RATE LIMITING ---
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -117,67 +171,18 @@ const loginLimiter = rateLimit({
 
 app.use('/api/', generalLimiter);
 
-// Database Setup
-const db = new sqlite3.Database(join(__dirname, 'database.sqlite'));
-
-db.serialize(() => {
-  // Users table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      email TEXT UNIQUE,
-      name TEXT,
-      password TEXT,
-      googleId TEXT
-    )
-  `);
-
-  // Drawers table (2. User Scoping)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS drawers (
-      id TEXT PRIMARY KEY,
-      userId INTEGER,
-      name TEXT,
-      emoji TEXT,
-      gradientColors TEXT,
-      FOREIGN KEY(userId) REFERENCES users(id)
-    )
-  `);
-
-  // Links table (2. User Scoping)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS links (
-      id TEXT PRIMARY KEY,
-      drawerId TEXT,
-      userId INTEGER,
-      name TEXT,
-      url TEXT,
-      emoji TEXT,
-      category TEXT,
-      FOREIGN KEY(drawerId) REFERENCES drawers(id),
-      FOREIGN KEY(userId) REFERENCES users(id)
-    )
-  `);
-
-  // 11. Audit Logging table
-  db.run(`
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      userId INTEGER,
-      action TEXT,
-      details TEXT,
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-});
-
-// Helper for Audit Logging
+// --- HELPERS ---
 const logEvent = (userId, action, details) => {
-  db.run('INSERT INTO audit_logs (userId, action, details) VALUES (?, ?, ?)', 
-    [userId, action, JSON.stringify(details)]);
+  try {
+    db.prepare('INSERT INTO audit_logs (userId, action, details) VALUES (?, ?, ?)').run(
+      userId, action, JSON.stringify(details)
+    );
+  } catch (err) {
+    console.error('Audit log error:', err);
+  }
 };
 
-// 3. Zod Schemas
+// --- ZOD SCHEMAS ---
 const signUpSchema = z.object({
   email: z.string().email('Invalid email format'),
   password: z.string()
@@ -193,10 +198,9 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-// Middleware to check auth and session timeout
+// --- AUTH MIDDLEWARE ---
 const requireAuth = (req, res, next) => {
   if (req.session.userId) {
-    // Session timeout logic (handled by rolling: true and maxAge in express-session)
     next();
   } else {
     res.status(401).json({ error: 'Unauthorized' });
@@ -210,55 +214,41 @@ app.post('/api/signup', async (req, res) => {
     const validatedData = signUpSchema.parse(req.body);
     const { email, name, password } = validatedData;
 
-    db.get('SELECT email FROM users WHERE email = ?', [email], async (err, row) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      if (row) return res.status(400).json({ error: 'Email already exists' });
+    const existing = db.prepare('SELECT email FROM users WHERE email = ?').get(email);
+    if (existing) return res.status(400).json({ error: 'Email already exists' });
 
-      try {
-        const hash = await bcrypt.hash(password, 10);
-        db.run('INSERT INTO users (email, name, password) VALUES (?, ?, ?)', [email, name, hash], function(err) {
-          if (err) return res.status(500).json({ error: 'Failed to create user' });
-          
-          req.session.userId = this.lastID;
-          logEvent(this.lastID, 'SIGNUP_SUCCESS', { email });
-          res.json({ message: 'User created', user: { id: this.lastID, email, name } });
-        });
-      } catch {
-        res.status(500).json({ error: 'Server error' });
-      }
-    });
+    const hash = await bcrypt.hash(password, 10);
+    const result = db.prepare('INSERT INTO users (email, name, password) VALUES (?, ?, ?)').run(email, name, hash);
+
+    req.session.userId = result.lastInsertRowid;
+    logEvent(result.lastInsertRowid, 'SIGNUP_SUCCESS', { email });
+    res.json({ message: 'User created', user: { id: result.lastInsertRowid, email, name } });
   } catch (err) {
-    res.status(400).json({ error: err.errors ? err.errors[0].message : 'Invalid data' });
+    if (err.errors) return res.status(400).json({ error: err.errors[0].message });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/login', loginLimiter, (req, res) => {
+app.post('/api/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = loginSchema.parse(req.body);
-    
-    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-      if (err) {
-        logEvent(null, 'LOGIN_DB_ERROR', { email });
-        return res.status(500).json({ error: 'An error occurred. Please try again.' });
-      }
-      
-      // 1. Generic error message to prevent enumeration
-      if (!user) {
-        logEvent(null, 'LOGIN_FAILED_USER_NOT_FOUND', { email });
-        return res.status(401).json({ error: 'Invalid email or password' });
-      }
 
-      const match = await bcrypt.compare(password, user.password);
-      if (!match) {
-        logEvent(user.id, 'LOGIN_FAILED_BAD_PASSWORD', { email });
-        return res.status(401).json({ error: 'Invalid email or password' });
-      }
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
+    if (!user) {
+      logEvent(null, 'LOGIN_FAILED_USER_NOT_FOUND', { email });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
 
-      req.session.userId = user.id;
-      logEvent(user.id, 'LOGIN_SUCCESS', { email });
-      res.json({ message: 'Logged in', user: { id: user.id, email: user.email, name: user.name } });
-    });
-  } catch {
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      logEvent(user.id, 'LOGIN_FAILED_BAD_PASSWORD', { email });
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+
+    req.session.userId = user.id;
+    logEvent(user.id, 'LOGIN_SUCCESS', { email });
+    res.json({ message: 'Logged in', user: { id: user.id, email: user.email, name: user.name } });
+  } catch (err) {
     res.status(400).json({ error: 'Invalid email or password' });
   }
 });
@@ -271,121 +261,114 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/me', requireAuth, (req, res) => {
-  db.get('SELECT id, email, name FROM users WHERE id = ?', [req.session.userId], (err, user) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
+  try {
+    const user = db.prepare('SELECT id, email, name FROM users WHERE id = ?').get(req.session.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
-  });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // --- GOOGLE OAUTH ROUTES ---
-
 app.get('/api/auth/google',
   passport.authenticate('google', { scope: ['profile', 'email'] }));
 
-app.get('/api/auth/google/callback', 
-  passport.authenticate('google', { failureRedirect: 'http://localhost:5173/?error=auth_failed' }),
+app.get('/api/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: `${FRONTEND_URL}/?error=auth_failed` }),
   function(req, res) {
     req.session.userId = req.user.id;
-    res.redirect('http://localhost:5173/');
+    res.redirect(FRONTEND_URL);
   });
 
-// --- DATA ENDPOINTS (with User Scoping & Authorization) ---
+// --- DRAWER ENDPOINTS ---
 
-// 2. Get Drawers (User Scoped)
 app.get('/api/drawers', requireAuth, (req, res) => {
-  db.all('SELECT * FROM drawers WHERE userId = ?', [req.session.userId], async (err, drawers) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
-    
-    try {
-      const drawersWithLinks = await Promise.all(drawers.map(drawer => {
-        return new Promise((resolve, reject) => {
-          db.all('SELECT * FROM links WHERE drawerId = ? AND userId = ?', [drawer.id, req.session.userId], (err, links) => {
-            if (err) reject(err);
-            else {
-              resolve({
-                ...drawer,
-                gradientColors: JSON.parse(drawer.gradientColors),
-                links: links || []
-              });
-            }
-          });
-        });
-      }));
-      res.json({ drawers: drawersWithLinks });
-    } catch {
-      res.status(500).json({ error: 'Database error' });
-    }
-  });
+  try {
+    const drawers = db.prepare('SELECT * FROM drawers WHERE userId = ?').all(req.session.userId);
+    const drawersWithLinks = drawers.map(drawer => {
+      const links = db.prepare('SELECT * FROM links WHERE drawerId = ? AND userId = ?').all(drawer.id, req.session.userId);
+      return {
+        ...drawer,
+        gradientColors: JSON.parse(drawer.gradientColors),
+        links: links || []
+      };
+    });
+    res.json({ drawers: drawersWithLinks });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-// Save Drawer
 app.post('/api/drawers', requireAuth, (req, res) => {
-  const { id, name, emoji, gradientColors } = req.body;
-  db.run('INSERT INTO drawers (id, userId, name, emoji, gradientColors) VALUES (?, ?, ?, ?, ?)',
-    [id, req.session.userId, name, emoji, JSON.stringify(gradientColors)], (err) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      logEvent(req.session.userId, 'DRAWER_CREATED', { id });
-      res.json({ message: 'Drawer saved' });
-    });
+  try {
+    const { id, name, emoji, gradientColors } = req.body;
+    db.prepare('INSERT INTO drawers (id, userId, name, emoji, gradientColors) VALUES (?, ?, ?, ?, ?)').run(
+      id, req.session.userId, name, emoji, JSON.stringify(gradientColors)
+    );
+    logEvent(req.session.userId, 'DRAWER_CREATED', { id });
+    res.json({ message: 'Drawer saved' });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-// Delete Drawer (with Ownership Check)
 app.delete('/api/drawers/:id', requireAuth, (req, res) => {
-  const drawerId = req.params.id;
-  
-  // 2. Authorization Check
-  db.get('SELECT userId FROM drawers WHERE id = ?', [drawerId], (err, row) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
+  try {
+    const drawerId = req.params.id;
+    const row = db.prepare('SELECT userId FROM drawers WHERE id = ?').get(drawerId);
     if (!row || row.userId !== req.session.userId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-
-    db.run('DELETE FROM drawers WHERE id = ?', [drawerId], (err) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      db.run('DELETE FROM links WHERE drawerId = ? AND userId = ?', [drawerId, req.session.userId]);
-      logEvent(req.session.userId, 'DRAWER_DELETED', { id: drawerId });
-      res.json({ message: 'Drawer deleted' });
-    });
-  });
+    db.prepare('DELETE FROM drawers WHERE id = ?').run(drawerId);
+    db.prepare('DELETE FROM links WHERE drawerId = ? AND userId = ?').run(drawerId, req.session.userId);
+    logEvent(req.session.userId, 'DRAWER_DELETED', { id: drawerId });
+    res.json({ message: 'Drawer deleted' });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
-// Add Link
+// --- LINK ENDPOINTS ---
+
 app.post('/api/links', requireAuth, (req, res) => {
-  const { id, drawerId, name, url, emoji, category } = req.body;
-
-  // Verify drawer ownership
-  db.get('SELECT userId FROM drawers WHERE id = ?', [drawerId], (err, row) => {
-    if (err || !row || row.userId !== req.session.userId) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-
-    db.run('INSERT INTO links (id, drawerId, userId, name, url, emoji, category) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [id, drawerId, req.session.userId, name, url, emoji, category], (err) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        logEvent(req.session.userId, 'LINK_CREATED', { id, drawerId });
-        res.json({ message: 'Link added' });
-      });
-  });
-});
-
-// Delete Link
-app.delete('/api/links/:id', requireAuth, (req, res) => {
-  const linkId = req.params.id;
-  db.get('SELECT userId FROM links WHERE id = ?', [linkId], (err, row) => {
-    if (err) return res.status(500).json({ error: 'Database error' });
+  try {
+    const { id, drawerId, name, url, emoji, category } = req.body;
+    const row = db.prepare('SELECT userId FROM drawers WHERE id = ?').get(drawerId);
     if (!row || row.userId !== req.session.userId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
+    db.prepare('INSERT INTO links (id, drawerId, userId, name, url, emoji, category) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      id, drawerId, req.session.userId, name, url, emoji, category
+    );
+    logEvent(req.session.userId, 'LINK_CREATED', { id, drawerId });
+    res.json({ message: 'Link added' });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
 
-    db.run('DELETE FROM links WHERE id = ?', [linkId], (err) => {
-      if (err) return res.status(500).json({ error: 'Database error' });
-      logEvent(req.session.userId, 'LINK_DELETED', { id: linkId });
-      res.json({ message: 'Link deleted' });
-    });
-  });
+app.delete('/api/links/:id', requireAuth, (req, res) => {
+  try {
+    const linkId = req.params.id;
+    const row = db.prepare('SELECT userId FROM links WHERE id = ?').get(linkId);
+    if (!row || row.userId !== req.session.userId) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    db.prepare('DELETE FROM links WHERE id = ?').run(linkId);
+    logEvent(req.session.userId, 'LINK_DELETED', { id: linkId });
+    res.json({ message: 'Link deleted' });
+  } catch {
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// --- SERVE FRONTEND IN PRODUCTION ---
+app.use(express.static(join(__dirname, 'dist')));
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'dist', 'index.html'));
 });
 
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+  console.log(`Server running on port ${port}`);
 });
