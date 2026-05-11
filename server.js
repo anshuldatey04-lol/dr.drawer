@@ -271,14 +271,17 @@ app.get('/api/me', requireAuth, (req, res) => {
 });
 
 // --- GOOGLE OAUTH ROUTES ---
-app.get('/api/auth/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] }));
-
 app.get('/api/auth/google/callback',
   passport.authenticate('google', { failureRedirect: `${FRONTEND_URL}/?error=auth_failed` }),
   function(req, res) {
     req.session.userId = req.user.id;
-    res.redirect(FRONTEND_URL);
+    req.session.save((err) => {
+      if (err) {
+        console.error('Session save error:', err);
+        return res.redirect(`${FRONTEND_URL}/?error=session_failed`);
+      }
+      res.redirect(FRONTEND_URL);
+    });
   });
 
 // --- DRAWER ENDPOINTS ---
